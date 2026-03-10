@@ -3,7 +3,7 @@
 GitHub Actions scanner — runs one rotated query per invocation.
 Appends new deals to data/listings.json, deduplicates by URL, prunes old entries.
 """
-import re, json, time, statistics, requests, sys
+import re, json, time, statistics, requests, sys, os, traceback
 from datetime import datetime, timezone, timedelta
 from urllib.parse import quote_plus
 
@@ -46,39 +46,100 @@ HEADERS = {
     "Content-Type": "application/x-www-form-urlencoded",
 }
 
+# ── Logging ───────────────────────────────────────────────────────────────────
+
+def log(msg, level="INFO"):
+    ts = datetime.now(timezone.utc).strftime("%H:%M:%S")
+    print(f"[{ts}] {level:5s} {msg}", flush=True)
+
+def dbg(msg):  log(msg, "DEBUG")
+def info(msg): log(msg, "INFO")
+def warn(msg): log(msg, "WARN")
+def err(msg):  log(msg, "ERROR")
+
+# ── Fetch ─────────────────────────────────────────────────────────────────────
 
 def fetch(query, sold):
+    kind = "sold_items" if sold else "for_sale"
     payload = {
-        "query": query, "type": "sold_items" if sold else "for_sale",
+        "query": query, "type": kind,
         "subcat": "", "tab_id": "1", "tz": "America/New_York", "sort": "best_match",
     }
-    r = requests.post("https://back.130point.com/sales/", data=payload,
-                      headers=HEADERS, timeout=20)
+    url = "https://back.130point.com/sales/"
+    info(f"POST {url}  type={kind}  query={query!r}")
+    t0 = time.time()
+    try:
+        r = requests.post(url, data=payload, headers=HEADERS, timeout=20)
+    except requests.RequestException as e:
+        err(f"Request failed: {e}")
+        raise
+
+    elapsed = time.time() - t0
+    info(f"Response: HTTP {r.status_code}  {len(r.text)} bytes  {elapsed:.2f}s")
+
     if r.status_code == 429:
-        print("Rate limited — skipping this run")
+        retry = r.headers.get("Retry-After", "?")
+        warn(f"Rate limited — Retry-After: {retry}s — exiting cleanly")
         sys.exit(0)
-    r.raise_for_status()
+
+    if not r.ok:
+        err(f"Unexpected status {r.status_code}: {r.text[:300]}")
+        r.raise_for_status()
+
+    # Spot-check: does response look like real data?
+    has_data = "data-price" in r.text
+    dbg(f"Contains 'data-price': {has_data}")
+    if not has_data:
+        warn(f"Response has no item data. First 500 chars: {r.text[:500]!r}")
+
     return r.text
 
+# ── Parse ─────────────────────────────────────────────────────────────────────
 
-def parse(html):
+def parse(html, label=""):
     items = []
-    for m in re.finditer(r'<tr[^>]+data-price="([\d.]+)"[^>]+data-currency="([^"]+)"[^>]*>(.*?)</tr>', html, re.DOTALL):
+    rows_found = 0
+    skipped_currency = 0
+    skipped_no_title = 0
+
+    for m in re.finditer(
+        r'<tr[^>]+data-price="([\d.]+)"[^>]+data-currency="([^"]+)"[^>]*>(.*?)</tr>',
+        html, re.DOTALL
+    ):
+        rows_found += 1
         price, currency, cell = float(m.group(1)), m.group(2), m.group(3)
+
         if currency != "USD":
+            skipped_currency += 1
+            dbg(f"  skip non-USD row: {currency} ${price}")
             continue
-        tm = re.search(r'id=[\'"]titleText[\'"][^>]*>.*?<a href=[\'"]([^\'"]+)[\'"][^>]*>([^<]+)</a>', cell, re.DOTALL)
+
+        tm = re.search(
+            r'id=[\'"]titleText[\'"][^>]*>.*?<a href=[\'"]([^\'"]+)[\'"][^>]*>([^<]+)</a>',
+            cell, re.DOTALL
+        )
         if not tm:
+            skipped_no_title += 1
+            dbg(f"  skip row — titleText anchor not found (price=${price})")
             continue
+
         url, title = tm.group(1), tm.group(2).strip()
         ship = 0.0
         sm = re.search(r'Shipping Price:</b>\s*\$([\d,.]+)', cell)
         if sm:
             ship = float(sm.group(1).replace(",", ""))
-        items.append({"title": title, "price": round(price + ship, 2),
-                      "url": url, "grade": grade(title)})
+            dbg(f"  shipping ${ship:.2f} added for: {title[:50]!r}")
+
+        g = grade(title)
+        total = round(price + ship, 2)
+        dbg(f"  parsed [{label}]: grade={g}  price=${total}  title={title[:55]!r}")
+        items.append({"title": title, "price": total, "url": url, "grade": g})
+
+    info(f"parse({label}): {rows_found} rows found → {len(items)} kept "
+         f"(skipped: {skipped_currency} non-USD, {skipped_no_title} no-title)")
     return items
 
+# ── Helpers ───────────────────────────────────────────────────────────────────
 
 def grade(title):
     u = title.upper()
@@ -107,90 +168,145 @@ def ebay_search(title, g):
     q = quote_plus(f"{clean} {g} pokemon")
     return f"https://www.ebay.com/sch/i.html?_nkw={q}&LH_BIN=1&LH_ItemCondition=3000&_sop=15"
 
+# ── DB ────────────────────────────────────────────────────────────────────────
 
 def load_db():
+    if not os.path.exists(DB_FILE):
+        warn(f"{DB_FILE} not found — starting fresh")
+        return {"listings": [], "last_scan": None, "scan_count": 0}
     try:
+        size = os.path.getsize(DB_FILE)
+        info(f"Loading {DB_FILE} ({size/1024:.1f} KB)")
         with open(DB_FILE) as f:
-            return json.load(f)
-    except Exception:
+            db = json.load(f)
+        info(f"Loaded {len(db.get('listings',[]))} existing listings")
+        return db
+    except Exception as e:
+        err(f"Failed to load DB: {e} — starting fresh")
         return {"listings": [], "last_scan": None, "scan_count": 0}
 
 
 def save_db(db):
+    size_before = os.path.getsize(DB_FILE) if os.path.exists(DB_FILE) else 0
     with open(DB_FILE, "w") as f:
         json.dump(db, f, separators=(",", ":"))
+    size_after = os.path.getsize(DB_FILE)
+    info(f"Saved {DB_FILE}: {size_before/1024:.1f} KB → {size_after/1024:.1f} KB  "
+         f"({len(db['listings'])} listings)")
 
+# ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
-    # Rotate query based on current 10-minute bucket
-    query_idx = (int(time.time()) // 600) % len(SCAN_QUERIES)
-    query = SCAN_QUERIES[query_idx]
-    print(f"Query [{query_idx}]: {query}")
+    info("=" * 60)
+    info(f"TCG Scanner — Python {sys.version.split()[0]}  pid={os.getpid()}")
 
-    print("Fetching sold listings...")
+    query_idx = (int(time.time()) // 600) % len(SCAN_QUERIES)
+    query     = SCAN_QUERIES[query_idx]
+    info(f"Query rotation: [{query_idx}/{len(SCAN_QUERIES)-1}] {query!r}")
+
+    # Fetch
+    info("--- Fetching sold listings ---")
     sold_html = fetch(query, sold=True)
+    info("Sleeping 2s between requests...")
     time.sleep(2)
-    print("Fetching active listings...")
+    info("--- Fetching active listings ---")
     active_html = fetch(query, sold=False)
 
-    active = parse(active_html)
-    sold   = parse(sold_html)
-    print(f"Active: {len(active)}  Sold: {len(sold)}")
+    # Parse
+    active = parse(active_html, "active")
+    sold   = parse(sold_html,   "sold")
 
-    # Build sold comps with tokens
+    if not active:
+        warn("No active listings parsed — nothing to add this run")
+    if not sold:
+        warn("No sold listings parsed — cannot compute market comps")
+
+    # Token-index sold items for similarity matching
     sold_tok = [(s, tokens(s["title"])) for s in sold]
+    dbg(f"Token-indexed {len(sold_tok)} sold items")
 
     now    = datetime.now(timezone.utc)
     cutoff = now - timedelta(days=MAX_AGE_DAYS)
 
     db = load_db()
 
-    # Prune old listings
+    # Prune
     before = len(db["listings"])
     db["listings"] = [
         l for l in db["listings"]
         if datetime.fromisoformat(l["found_at"]) > cutoff
     ]
-    print(f"Pruned {before - len(db['listings'])} old listings")
+    pruned = before - len(db["listings"])
+    info(f"Pruned {pruned} listings older than {MAX_AGE_DAYS} days")
 
     existing_urls = {l["url"] for l in db["listings"]}
-    new_count = 0
+    info(f"Existing URLs in DB: {len(existing_urls)}")
+
+    new_count   = 0
+    skip_dup    = 0
+    skip_comps  = 0
 
     for item in active:
         if item["url"] in existing_urls:
+            skip_dup += 1
+            dbg(f"  dup skip: {item['title'][:50]!r}")
             continue
+
         a_tok = tokens(item["title"])
-        comps = [s["price"] for s, st in sold_tok
-                 if s["grade"] == item["grade"] and jaccard(a_tok, st) >= SIM_THRESH]
+        comps = []
+        for s, st in sold_tok:
+            if s["grade"] != item["grade"]:
+                continue
+            sim = jaccard(a_tok, st)
+            if sim >= SIM_THRESH:
+                comps.append(s["price"])
+                dbg(f"  comp match sim={sim:.2f}  ${s['price']}  {s['title'][:40]!r}")
+
         if len(comps) < MIN_COMPS:
+            skip_comps += 1
+            dbg(f"  skip (only {len(comps)} comps < {MIN_COMPS}): {item['title'][:50]!r}")
             continue
+
         med   = statistics.median(comps)
         ratio = item["price"] / med
+        deal  = ratio < DEAL_THRESH
+
+        info(f"  {'DEAL' if deal else 'item'}: ${item['price']:.2f} vs med ${med:.2f} "
+             f"({ratio*100:.0f}%)  {item['grade']}  {item['title'][:45]!r}")
+
         entry = {
-            "url":       item["url"],
-            "title":     item["title"],
-            "grade":     item["grade"],
-            "price":     item["price"],
-            "med_sold":  round(med, 2),
-            "ratio":     round(ratio, 4),
-            "savings":   round(med - item["price"], 2),
-            "deal":      ratio < DEAL_THRESH,
-            "n_comps":   len(comps),
-            "live_url":  ebay_search(item["title"], item["grade"]),
-            "found_at":  now.isoformat(),
-            "query":     query,
+            "url":      item["url"],
+            "title":    item["title"],
+            "grade":    item["grade"],
+            "price":    item["price"],
+            "med_sold": round(med, 2),
+            "ratio":    round(ratio, 4),
+            "savings":  round(med - item["price"], 2),
+            "deal":     deal,
+            "n_comps":  len(comps),
+            "live_url": ebay_search(item["title"], item["grade"]),
+            "found_at": now.isoformat(),
+            "query":    query,
         }
         db["listings"].append(entry)
         existing_urls.add(item["url"])
         new_count += 1
 
-    # Cap by file size: drop oldest entries until under 1 GB
+    info(f"New: {new_count}  Skipped duplicates: {skip_dup}  Skipped low-comps: {skip_comps}")
+
+    # Cap by file size
     db["listings"] = sorted(db["listings"], key=lambda l: l["found_at"], reverse=True)
+    raw_size = len(json.dumps(db["listings"], separators=(",", ":")).encode())
+    info(f"Pre-cap size: {raw_size/1024/1024:.2f} MB  ({len(db['listings'])} listings)")
+    dropped = 0
     while True:
         size = len(json.dumps(db["listings"], separators=(",", ":")).encode())
         if size <= MAX_DB_BYTES:
             break
-        db["listings"].pop()  # remove oldest
+        db["listings"].pop()
+        dropped += 1
+    if dropped:
+        info(f"Dropped {dropped} listings to stay under size cap")
 
     db["last_scan"]  = now.isoformat()
     db["scan_count"] = db.get("scan_count", 0) + 1
@@ -198,8 +314,14 @@ def main():
     save_db(db)
 
     deals = sum(1 for l in db["listings"] if l["deal"])
-    print(f"New: {new_count}  Total: {len(db['listings'])}  Deals: {deals}")
+    info(f"Done — total: {len(db['listings'])}  deals: {deals}  scan #{db['scan_count']}")
+    info("=" * 60)
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception:
+        err("Unhandled exception:")
+        traceback.print_exc()
+        sys.exit(1)
