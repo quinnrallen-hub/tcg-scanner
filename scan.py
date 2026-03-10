@@ -5,6 +5,7 @@ Appends new deals to data/listings.json, deduplicates by URL, prunes old entries
 """
 import re, json, time, statistics, requests, sys, os, traceback
 from datetime import datetime, timezone, timedelta
+from email.utils import parsedate_to_datetime
 from urllib.parse import quote_plus
 
 DB_FILE       = "data/listings.json"
@@ -12,7 +13,8 @@ MAX_AGE_DAYS  = 7       # Drop listings older than this
 MAX_DB_BYTES  = 1 * 1024 * 1024 * 1024  # 1 GB hard cap
 DEAL_THRESH   = 0.85    # Flag as deal if price < 85% of median sold
 SIM_THRESH    = 0.32    # Jaccard similarity to count as "same card"
-MIN_COMPS     = 2       # Min sold comps required
+MIN_COMPS     = 5       # Min sold comps required
+COMP_DAYS     = 90     # Only count sold listings within this many days
 
 SCAN_QUERIES = [
     "pokemon PSA 10 holo rare",
@@ -132,8 +134,24 @@ def parse(html, label=""):
 
         g = grade(title)
         total = round(price + ship, 2)
-        dbg(f"  parsed [{label}]: grade={g}  price=${total}  title={title[:55]!r}")
-        items.append({"title": title, "price": total, "url": url, "grade": g})
+
+        # Parse sale date — format: "Mon 15 Dec 2025 07:59:40 EST"
+        sold_at = None
+        dm = re.search(r'<b>Date:</b>\s*([^<]+)', cell)
+        if dm:
+            try:
+                # Reformat to something parsedate_to_datetime can handle
+                raw = dm.group(1).strip()
+                # Strip day-of-week prefix if present: "Mon 15 Dec 2025 07:59:40 EST"
+                parts = raw.split()
+                if len(parts) == 6:          # has weekday prefix
+                    raw = " ".join(parts[1:])  # "15 Dec 2025 07:59:40 EST"
+                sold_at = datetime.strptime(raw, "%d %b %Y %H:%M:%S %Z").replace(tzinfo=timezone.utc)
+            except Exception as e:
+                dbg(f"  could not parse date {dm.group(1)!r}: {e}")
+
+        dbg(f"  parsed [{label}]: grade={g}  price=${total}  date={sold_at}  title={title[:50]!r}")
+        items.append({"title": title, "price": total, "url": url, "grade": g, "sold_at": sold_at})
 
     info(f"parse({label}): {rows_found} rows found → {len(items)} kept "
          f"(skipped: {skipped_currency} non-USD, {skipped_no_title} no-title)")
@@ -221,9 +239,25 @@ def main():
     if not sold:
         warn("No sold listings parsed — cannot compute market comps")
 
-    # Token-index sold items for similarity matching
-    sold_tok = [(s, tokens(s["title"])) for s in sold]
-    dbg(f"Token-indexed {len(sold_tok)} sold items")
+    # Filter sold items to last COMP_DAYS days
+    comp_cutoff = now - timedelta(days=COMP_DAYS)
+    sold_recent = []
+    skipped_old = 0
+    for s in sold:
+        if s["sold_at"] is None:
+            sold_recent.append(s)   # no date = keep (can't filter what we can't read)
+            dbg(f"  sold date unknown, keeping: {s['title'][:50]!r}")
+        elif s["sold_at"] >= comp_cutoff:
+            sold_recent.append(s)
+        else:
+            skipped_old += 1
+            dbg(f"  sold {s['sold_at'].date()} — older than {COMP_DAYS}d, excluding from comps")
+    info(f"Sold comps: {len(sold)} total → {len(sold_recent)} within {COMP_DAYS} days "
+         f"({skipped_old} too old)")
+
+    # Token-index recent sold items for similarity matching
+    sold_tok = [(s, tokens(s["title"])) for s in sold_recent]
+    dbg(f"Token-indexed {len(sold_tok)} recent sold items")
 
     now    = datetime.now(timezone.utc)
     cutoff = now - timedelta(days=MAX_AGE_DAYS)
@@ -260,7 +294,8 @@ def main():
             sim = jaccard(a_tok, st)
             if sim >= SIM_THRESH:
                 comps.append(s["price"])
-                dbg(f"  comp match sim={sim:.2f}  ${s['price']}  {s['title'][:40]!r}")
+                date_str = s["sold_at"].date() if s["sold_at"] else "?"
+                dbg(f"  comp match sim={sim:.2f}  ${s['price']}  {date_str}  {s['title'][:40]!r}")
 
         if len(comps) < MIN_COMPS:
             skip_comps += 1
