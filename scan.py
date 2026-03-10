@@ -48,6 +48,13 @@ HEADERS = {
     "Content-Type": "application/x-www-form-urlencoded",
 }
 
+TOR_PROXIES = {
+    "http":  "socks5h://127.0.0.1:9050",
+    "https": "socks5h://127.0.0.1:9050",
+}
+
+USE_TOR = os.environ.get("USE_TOR", "0") == "1"
+
 # ── Logging ───────────────────────────────────────────────────────────────────
 
 def log(msg, level="INFO"):
@@ -68,10 +75,11 @@ def fetch(query, sold):
         "subcat": "", "tab_id": "1", "tz": "America/New_York", "sort": "best_match",
     }
     url = "https://back.130point.com/sales/"
-    info(f"POST {url}  type={kind}  query={query!r}")
+    proxies = TOR_PROXIES if USE_TOR else None
+    info(f"POST {url}  type={kind}  via={'Tor' if USE_TOR else 'direct'}  query={query!r}")
     t0 = time.time()
     try:
-        r = requests.post(url, data=payload, headers=HEADERS, timeout=20)
+        r = requests.post(url, data=payload, headers=HEADERS, proxies=proxies, timeout=30)
     except requests.RequestException as e:
         err(f"Request failed: {e}")
         raise
@@ -216,7 +224,7 @@ def save_db(db):
 
 def main():
     info("=" * 60)
-    info(f"TCG Scanner — Python {sys.version.split()[0]}  pid={os.getpid()}")
+    info(f"TCG Scanner — Python {sys.version.split()[0]}  pid={os.getpid()}  tor={'yes' if USE_TOR else 'no'}")
 
     query_idx = (int(time.time()) // 600) % len(SCAN_QUERIES)
     query     = SCAN_QUERIES[query_idx]

@@ -19,10 +19,24 @@ jobs:
           python-version: '3.12'
 
       - name: Install deps
-        run: pip install requests
+        run: pip install requests requests[socks]
+
+      - name: Install and start Tor
+        run: |
+          sudo apt-get install -y tor
+          sudo service tor start
+          # Wait for Tor to be ready
+          for i in $(seq 1 15); do
+            curl -s --socks5-hostname 127.0.0.1:9050 https://check.torproject.org/api/ip \
+              | grep -q '"IsTor":true' && echo "Tor ready" && break
+            echo "Waiting for Tor... ($i)"
+            sleep 2
+          done
 
       - name: Run scanner
         run: python scan.py
+        env:
+          USE_TOR: "1"
 
       - name: Commit if changed
         run: |
