@@ -8,8 +8,8 @@ from datetime import datetime, timezone, timedelta
 from urllib.parse import quote_plus
 
 DB_FILE       = "data/listings.json"
-MAX_AGE_DAYS  = 3       # Drop listings older than this
-MAX_LISTINGS  = 800     # Cap total stored listings
+MAX_AGE_DAYS  = 7       # Drop listings older than this
+MAX_DB_BYTES  = 1 * 1024 * 1024 * 1024  # 1 GB hard cap
 DEAL_THRESH   = 0.85    # Flag as deal if price < 85% of median sold
 SIM_THRESH    = 0.32    # Jaccard similarity to count as "same card"
 MIN_COMPS     = 2       # Min sold comps required
@@ -184,8 +184,13 @@ def main():
         existing_urls.add(item["url"])
         new_count += 1
 
-    # Cap total size
-    db["listings"] = sorted(db["listings"], key=lambda l: l["found_at"], reverse=True)[:MAX_LISTINGS]
+    # Cap by file size: drop oldest entries until under 1 GB
+    db["listings"] = sorted(db["listings"], key=lambda l: l["found_at"], reverse=True)
+    while True:
+        size = len(json.dumps(db["listings"], separators=(",", ":")).encode())
+        if size <= MAX_DB_BYTES:
+            break
+        db["listings"].pop()  # remove oldest
 
     db["last_scan"]  = now.isoformat()
     db["scan_count"] = db.get("scan_count", 0) + 1
