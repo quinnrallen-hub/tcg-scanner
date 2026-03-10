@@ -247,6 +247,9 @@ def main():
     if not sold:
         warn("No sold listings parsed — cannot compute market comps")
 
+    now    = datetime.now(timezone.utc)
+    cutoff = now - timedelta(days=MAX_AGE_DAYS)
+
     # Filter sold items to last COMP_DAYS days
     comp_cutoff = now - timedelta(days=COMP_DAYS)
     sold_recent = []
@@ -266,9 +269,6 @@ def main():
     # Token-index recent sold items for similarity matching
     sold_tok = [(s, tokens(s["title"])) for s in sold_recent]
     dbg(f"Token-indexed {len(sold_tok)} recent sold items")
-
-    now    = datetime.now(timezone.utc)
-    cutoff = now - timedelta(days=MAX_AGE_DAYS)
 
     db = load_db()
 
