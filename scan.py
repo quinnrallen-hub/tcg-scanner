@@ -12,7 +12,7 @@ DB_FILE       = "data/listings.json"
 MAX_AGE_DAYS  = 7       # Drop listings older than this
 MAX_DB_BYTES  = 1 * 1024 * 1024 * 1024  # 1 GB hard cap
 DEAL_THRESH   = 0.85    # Flag as deal if price < 85% of median sold
-SIM_THRESH    = 0.32    # Jaccard similarity to count as "same card"
+SIM_THRESH    = 0.50    # Jaccard similarity to count as "same card"
 MIN_COMPS     = 5       # Min sold comps required
 COMP_DAYS     = 90     # Only count sold listings within this many days
 
@@ -189,6 +189,31 @@ def jaccard(a, b):
     return len(a & b) / len(a | b)
 
 
+LOT_RE = re.compile(
+    r'\b(lot|bundle|set|collection|pack)\b'
+    r'|\(\s*\d+\s*\)'       # (10), (5), etc.
+    r'|\bx\s*\d+\b'         # x5, x 10
+    r'|\b\d+\s*cards?\b',   # 10 cards, 5 card
+    re.IGNORECASE
+)
+
+def is_lot(title):
+    return bool(LOT_RE.search(title))
+
+
+def iqr_filter(prices):
+    """Remove outliers beyond 1.5×IQR; return cleaned list (or original if too small)."""
+    if len(prices) < 4:
+        return prices
+    s = sorted(prices)
+    q1 = statistics.median(s[:len(s)//2])
+    q3 = statistics.median(s[(len(s)+1)//2:])
+    iqr = q3 - q1
+    lo, hi = q1 - 1.5 * iqr, q3 + 1.5 * iqr
+    filtered = [p for p in prices if lo <= p <= hi]
+    return filtered if len(filtered) >= MIN_COMPS else prices
+
+
 def ebay_search(title, g):
     clean = re.sub(r'\b(PSA|BGS|CGC|SGC)\b.*', '', title, flags=re.IGNORECASE).strip()
     q = quote_plus(f"{clean} {g} pokemon")
@@ -238,6 +263,11 @@ def main():
     info("--- Fetching active listings ---")
     active_html = fetch(query, sold=False)
 
+    # Sanity-check: 130point sometimes returns identical HTML for both types (Tor quirk)
+    if active_html == sold_html:
+        warn("sold_html == active_html — server returned same response for both types; aborting run")
+        sys.exit(0)
+
     # Parse
     active = parse(active_html, "active")
     sold   = parse(sold_html,   "sold")
@@ -246,6 +276,12 @@ def main():
         warn("No active listings parsed — nothing to add this run")
     if not sold:
         warn("No sold listings parsed — cannot compute market comps")
+
+    # Filter out lots/bundles from both sets
+    before_a, before_s = len(active), len(sold)
+    active = [i for i in active if not is_lot(i["title"])]
+    sold   = [i for i in sold   if not is_lot(i["title"])]
+    info(f"Lot filter: active {before_a}→{len(active)}  sold {before_s}→{len(sold)}")
 
     now    = datetime.now(timezone.utc)
     cutoff = now - timedelta(days=MAX_AGE_DAYS)
@@ -310,6 +346,7 @@ def main():
             dbg(f"  skip (only {len(comps)} comps < {MIN_COMPS}): {item['title'][:50]!r}")
             continue
 
+        comps = iqr_filter(comps)
         med   = statistics.median(comps)
         ratio = item["price"] / med
         deal  = ratio < DEAL_THRESH
