@@ -3,7 +3,7 @@
 GitHub Actions scanner — runs one rotated query per invocation.
 Appends new deals to data/listings.json, deduplicates by URL, prunes old entries.
 """
-import re, json, time, statistics, requests, sys, os, traceback
+import re, json, time, statistics, requests, sys, os, traceback, socket
 from datetime import datetime, timezone, timedelta
 from email.utils import parsedate_to_datetime
 from urllib.parse import quote_plus
@@ -54,6 +54,7 @@ TOR_PROXIES = {
 }
 
 USE_TOR = os.environ.get("USE_TOR", "0") == "1"
+TOR_CONTROL_PORT = 9051
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 
@@ -65,6 +66,22 @@ def dbg(msg):  log(msg, "DEBUG")
 def info(msg): log(msg, "INFO")
 def warn(msg): log(msg, "WARN")
 def err(msg):  log(msg, "ERROR")
+
+# ── Tor helpers ───────────────────────────────────────────────────────────────
+
+def tor_new_identity():
+    """Send NEWNYM to Tor control port to get a fresh exit circuit."""
+    try:
+        with socket.create_connection(("127.0.0.1", TOR_CONTROL_PORT), timeout=5) as s:
+            s.sendall(b'AUTHENTICATE ""\r\nSIGNAL NEWNYM\r\n')
+            resp = s.recv(256).decode(errors="replace")
+        if "250" in resp:
+            info("Tor: new identity requested — waiting 5s for circuit")
+            time.sleep(5)
+        else:
+            warn(f"Tor NEWNYM unexpected response: {resp!r}")
+    except Exception as e:
+        warn(f"Tor control port unavailable: {e}")
 
 # ── Fetch ─────────────────────────────────────────────────────────────────────
 
@@ -258,8 +275,11 @@ def main():
     # Fetch
     info("--- Fetching sold listings ---")
     sold_html = fetch(query, sold=True)
-    info("Sleeping 2s between requests...")
-    time.sleep(2)
+    if USE_TOR:
+        tor_new_identity()
+    else:
+        info("Sleeping 2s between requests...")
+        time.sleep(2)
     info("--- Fetching active listings ---")
     active_html = fetch(query, sold=False)
 

@@ -24,6 +24,9 @@ jobs:
       - name: Install and start Tor
         run: |
           sudo apt-get install -y tor
+          # Enable control port (unauthenticated, localhost only)
+          echo "ControlPort 9051" | sudo tee -a /etc/tor/torrc
+          echo "CookieAuthentication 0" | sudo tee -a /etc/tor/torrc
           sudo service tor start
           # Wait for Tor to be ready
           for i in $(seq 1 15); do
