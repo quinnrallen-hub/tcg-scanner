@@ -1,0 +1,37 @@
+name: Scan Pokemon Cards
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'   # every 10 minutes
+  workflow_dispatch:           # allow manual trigger from GitHub UI
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install deps
+        run: pip install requests
+
+      - name: Run scanner
+        run: python scan.py
+
+      - name: Commit if changed
+        run: |
+          git config user.name  "TCG Scanner Bot"
+          git config user.email "bot@tcgscanner.local"
+          if git diff --quiet data/listings.json; then
+            echo "No changes to commit"
+          else
+            git add data/listings.json
+            git commit -m "scan: $(date -u +'%Y-%m-%d %H:%M UTC') — query $(python -c 'import time; print(int(time.time())//600 % 7)')/7"
+            git push
+          fi
