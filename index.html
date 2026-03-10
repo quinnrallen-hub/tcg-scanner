@@ -1,0 +1,748 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TCG Deal Scanner – Graded Pokemon Card Finder</title>
+<meta name="description" content="Find undervalued graded Pokemon cards on eBay. Compare active listings to recent sold prices to spot deals instantly.">
+<style>
+  :root {
+    --bg:       #0d0f14;
+    --surface:  #161a23;
+    --surface2: #1e2330;
+    --border:   #2a3040;
+    --gold:     #f5c842;
+    --gold2:    #e0a800;
+    --green:    #2ecc71;
+    --red:      #e74c3c;
+    --yellow:   #f39c12;
+    --blue:     #3b82f6;
+    --text:     #e8eaf0;
+    --muted:    #7a8499;
+    --radius:   10px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    min-height: 100vh;
+  }
+
+  /* ── Header ── */
+  header {
+    background: linear-gradient(135deg, #0d0f14 0%, #1a1f2e 100%);
+    border-bottom: 1px solid var(--border);
+    padding: 20px 24px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+  }
+  .logo { font-size: 28px; }
+  header h1 { font-size: 1.4rem; font-weight: 700; color: var(--gold); }
+  header p { font-size: 0.8rem; color: var(--muted); margin-top: 2px; }
+
+  /* ── Main layout ── */
+  main { max-width: 1100px; margin: 0 auto; padding: 32px 20px; }
+
+  /* ── Mode toggle ── */
+  .mode-tabs {
+    display: flex;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 4px;
+    gap: 4px;
+    width: fit-content;
+    margin-bottom: 24px;
+  }
+  .mode-tab {
+    padding: 8px 20px;
+    border-radius: 7px;
+    border: none;
+    cursor: pointer;
+    font-size: 0.9rem;
+    font-weight: 500;
+    background: transparent;
+    color: var(--muted);
+    transition: all 0.15s;
+  }
+  .mode-tab.active {
+    background: var(--gold);
+    color: #000;
+    font-weight: 700;
+  }
+  .mode-tab:hover:not(.active) { color: var(--text); background: var(--surface2); }
+
+  /* ── Search card ── */
+  .search-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 24px;
+    margin-bottom: 24px;
+  }
+  .search-card h2 { font-size: 1rem; font-weight: 600; margin-bottom: 16px; color: var(--gold); }
+
+  .form-row { display: flex; gap: 10px; flex-wrap: wrap; }
+  .form-group { display: flex; flex-direction: column; gap: 5px; flex: 1; min-width: 180px; }
+  label { font-size: 0.78rem; color: var(--muted); font-weight: 500; text-transform: uppercase; letter-spacing: 0.04em; }
+  input, select {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    color: var(--text);
+    padding: 10px 12px;
+    font-size: 0.9rem;
+    outline: none;
+    transition: border-color 0.15s;
+    width: 100%;
+  }
+  input:focus, select:focus { border-color: var(--gold); }
+  input::placeholder { color: var(--muted); }
+
+  .btn {
+    padding: 10px 24px;
+    border-radius: 7px;
+    border: none;
+    cursor: pointer;
+    font-size: 0.9rem;
+    font-weight: 700;
+    transition: all 0.15s;
+    align-self: flex-end;
+    white-space: nowrap;
+  }
+  .btn-primary { background: var(--gold); color: #000; }
+  .btn-primary:hover { background: var(--gold2); transform: translateY(-1px); }
+  .btn-primary:active { transform: translateY(0); }
+  .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+
+  .scan-info {
+    font-size: 0.82rem;
+    color: var(--muted);
+    margin-top: 12px;
+    line-height: 1.5;
+  }
+  .scan-info b { color: var(--text); }
+
+  /* ── Stats row ── */
+  .stats-row {
+    display: flex;
+    gap: 12px;
+    margin-bottom: 20px;
+    flex-wrap: wrap;
+  }
+  .stat-chip {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 16px;
+    font-size: 0.82rem;
+  }
+  .stat-chip .val { font-size: 1.3rem; font-weight: 700; display: block; }
+  .stat-chip .lbl { color: var(--muted); font-size: 0.75rem; }
+  .stat-chip.highlight { border-color: var(--green); }
+  .stat-chip.highlight .val { color: var(--green); }
+
+  /* ── Loader ── */
+  #loader {
+    display: none;
+    text-align: center;
+    padding: 60px 20px;
+  }
+  .spinner {
+    width: 44px; height: 44px;
+    border: 3px solid var(--border);
+    border-top-color: var(--gold);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    margin: 0 auto 16px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  #loader p { color: var(--muted); font-size: 0.9rem; }
+
+  /* ── Error ── */
+  #error-box {
+    display: none;
+    background: rgba(231,76,60,0.1);
+    border: 1px solid rgba(231,76,60,0.4);
+    border-radius: var(--radius);
+    padding: 16px 20px;
+    margin-bottom: 20px;
+    color: #e74c3c;
+    font-size: 0.9rem;
+  }
+
+  /* ── Results ── */
+  #results { display: none; }
+
+  /* ── Sold comps summary ── */
+  .comps-grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 20px;
+  }
+  .comp-badge {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 6px 12px;
+    font-size: 0.8rem;
+  }
+  .comp-badge .grade-label { color: var(--muted); }
+  .comp-badge .grade-price { color: var(--text); font-weight: 600; margin-left: 6px; }
+  .comp-badge .grade-n { color: var(--muted); font-size: 0.72rem; margin-left: 4px; }
+
+  /* ── Table ── */
+  .table-wrap {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+  }
+  table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+  thead { background: var(--surface2); }
+  th {
+    padding: 10px 14px;
+    text-align: left;
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--muted);
+    font-weight: 600;
+    border-bottom: 1px solid var(--border);
+  }
+  th.right, td.right { text-align: right; }
+  th.center, td.center { text-align: center; }
+  tbody tr { border-bottom: 1px solid var(--border); transition: background 0.1s; }
+  tbody tr:last-child { border-bottom: none; }
+  tbody tr:hover { background: var(--surface2); }
+  td { padding: 11px 14px; vertical-align: middle; }
+
+  .deal-badge {
+    display: inline-block;
+    background: rgba(46,204,113,0.15);
+    color: var(--green);
+    border: 1px solid rgba(46,204,113,0.4);
+    border-radius: 5px;
+    padding: 2px 8px;
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+  }
+  .grade-tag {
+    display: inline-block;
+    background: rgba(245,200,66,0.12);
+    color: var(--gold);
+    border-radius: 4px;
+    padding: 2px 7px;
+    font-size: 0.78rem;
+    font-weight: 600;
+  }
+  .vs-good  { color: var(--green); font-weight: 600; }
+  .vs-ok    { color: var(--yellow); }
+  .vs-high  { color: var(--red); }
+  .vs-na    { color: var(--muted); }
+
+  .title-cell { max-width: 340px; }
+  .title-text { display: block; font-weight: 500; margin-bottom: 4px; }
+  .ebay-link {
+    font-size: 0.75rem;
+    color: var(--blue);
+    text-decoration: none;
+    opacity: 0.8;
+    word-break: break-all;
+  }
+  .ebay-link:hover { opacity: 1; text-decoration: underline; }
+
+  /* ── Empty state ── */
+  .empty {
+    text-align: center;
+    padding: 60px 20px;
+    color: var(--muted);
+  }
+  .empty .icon { font-size: 3rem; margin-bottom: 12px; }
+  .empty p { font-size: 0.9rem; }
+
+  /* ── Footer ── */
+  footer {
+    text-align: center;
+    padding: 32px 20px;
+    color: var(--muted);
+    font-size: 0.78rem;
+    border-top: 1px solid var(--border);
+    margin-top: 40px;
+  }
+  footer a { color: var(--muted); }
+
+  /* ── Responsive ── */
+  @media (max-width: 640px) {
+    .form-row { flex-direction: column; }
+    th:nth-child(3), td:nth-child(3) { display: none; } /* hide median col on mobile */
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">🃏</div>
+  <div>
+    <h1>TCG Deal Scanner</h1>
+    <p>Find undervalued graded Pokémon cards on eBay</p>
+  </div>
+</header>
+
+<main>
+
+  <!-- Mode tabs -->
+  <div class="mode-tabs">
+    <button class="mode-tab active" data-mode="search" onclick="setMode('search')">🔍 Card Search</button>
+    <button class="mode-tab" data-mode="scan" onclick="setMode('scan')">⚡ Broad Scan</button>
+  </div>
+
+  <!-- Search card -->
+  <div class="search-card" id="search-panel">
+    <h2>Search a specific card</h2>
+    <div class="form-row">
+      <div class="form-group" style="flex:2">
+        <label>Card Name</label>
+        <input type="text" id="card-input" placeholder="e.g. Charizard Base Set, Pikachu Illustrator" />
+      </div>
+      <div class="form-group">
+        <label>Grade</label>
+        <select id="grade-input">
+          <option value="">Any grade</option>
+          <optgroup label="PSA">
+            <option>PSA 10</option>
+            <option>PSA 9.5</option>
+            <option>PSA 9</option>
+            <option>PSA 8</option>
+            <option>PSA 7</option>
+          </optgroup>
+          <optgroup label="BGS">
+            <option>BGS 10</option>
+            <option>BGS 9.5</option>
+            <option>BGS 9</option>
+          </optgroup>
+          <optgroup label="CGC">
+            <option>CGC 10</option>
+            <option>CGC 9.5</option>
+            <option>CGC 9</option>
+          </optgroup>
+          <optgroup label="SGC">
+            <option>SGC 10</option>
+            <option>SGC 9</option>
+          </optgroup>
+        </select>
+      </div>
+      <button class="btn btn-primary" onclick="runSearch()" id="search-btn">Search</button>
+    </div>
+  </div>
+
+  <!-- Scan panel -->
+  <div class="search-card" id="scan-panel" style="display:none">
+    <h2>Broad market scan</h2>
+    <div class="form-row">
+      <div class="form-group">
+        <label>Grade filter (optional)</label>
+        <select id="scan-grade">
+          <option value="">All grades</option>
+          <option>PSA 10</option>
+          <option>PSA 9</option>
+          <option>BGS 9.5</option>
+          <option>CGC 10</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Deal threshold</label>
+        <select id="scan-threshold">
+          <option value="0.7">70% of market (deep deals only)</option>
+          <option value="0.8">80% of market</option>
+          <option value="0.85" selected>85% of market (default)</option>
+          <option value="0.9">90% of market (more results)</option>
+        </select>
+      </div>
+      <button class="btn btn-primary" onclick="runScan()" id="scan-btn">Scan Market</button>
+    </div>
+    <p class="scan-info">
+      Searches broadly across grades and sets, then uses <b>title similarity matching</b> to compare each active listing to recent sold prices for the same specific card.
+    </p>
+  </div>
+
+  <!-- Error -->
+  <div id="error-box"></div>
+
+  <!-- Loader -->
+  <div id="loader">
+    <div class="spinner"></div>
+    <p id="loader-text">Fetching listings...</p>
+  </div>
+
+  <!-- Results -->
+  <div id="results">
+    <div class="stats-row" id="stats-row"></div>
+    <div class="comps-grid" id="comps-grid"></div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Grade</th>
+            <th>Listed Price</th>
+            <th class="right">Median Sold</th>
+            <th class="right">vs Market</th>
+            <th class="center">Deal</th>
+            <th>Card</th>
+          </tr>
+        </thead>
+        <tbody id="results-body"></tbody>
+      </table>
+    </div>
+  </div>
+
+</main>
+
+<footer>
+  <p>Data sourced from <a href="https://130point.com" target="_blank">130point.com</a> · eBay sold & active listings · Prices in USD</p>
+</footer>
+
+<script>
+'use strict';
+
+// ── Config ──────────────────────────────────────────────────────────────────
+const DEAL_THRESHOLD  = 0.85;
+const BACKEND_URL     = 'https://back.130point.com/sales/';
+const CORS_PROXY      = 'https://corsproxy.io/?';
+
+const GRADE_KEYWORDS = [
+  'PSA 10','PSA 9.5','PSA 9','PSA 8','PSA 7',
+  'BGS 10','BGS 9.5','BGS 9','BGS 8.5',
+  'CGC 10','CGC 9.5','CGC 9',
+  'SGC 10','SGC 9.5','SGC 9',
+];
+const GRADE_COMPANIES = ['PSA','BGS','CGC','SGC'];
+
+const STOP_WORDS = new Set([
+  'pokemon','card','graded','holo','rare','ultra','full','art',
+  'psa','bgs','cgc','sgc','gem','mint','near','nm','lp',
+  'the','a','an','and','or','of','in','on','set','lot',
+  'vintage','japanese','english','1st','edition','foil',
+  'secret','alternate','rainbow','trainer','gallery','promo',
+  'special','collection','classic',
+]);
+
+// ── Mode toggle ──────────────────────────────────────────────────────────────
+let currentMode = 'search';
+function setMode(mode) {
+  currentMode = mode;
+  document.querySelectorAll('.mode-tab').forEach(t => t.classList.toggle('active', t.dataset.mode === mode));
+  document.getElementById('search-panel').style.display = mode === 'search' ? '' : 'none';
+  document.getElementById('scan-panel').style.display   = mode === 'scan'   ? '' : 'none';
+  hide('results'); hide('error-box'); hide('loader');
+}
+
+// ── UI helpers ───────────────────────────────────────────────────────────────
+const show = id => document.getElementById(id).style.display = '';
+const hide = id => document.getElementById(id).style.display = 'none';
+const setText = (id, t) => document.getElementById(id).textContent = t;
+
+function showError(msg) {
+  const el = document.getElementById('error-box');
+  el.innerHTML = msg;
+  el.style.display = '';
+  hide('loader');
+}
+
+function setLoading(text) {
+  setText('loader-text', text || 'Fetching listings...');
+  show('loader');
+  hide('results');
+  hide('error-box');
+}
+
+// ── 130point fetch ───────────────────────────────────────────────────────────
+async function fetch130(query, sold) {
+  const body = new URLSearchParams({
+    query, type: sold ? 'sold_items' : 'for_sale',
+    subcat: '', tab_id: '1', tz: 'America/New_York', sort: 'best_match',
+  });
+
+  // Try direct first, fall back to CORS proxy
+  for (const url of [BACKEND_URL, CORS_PROXY + encodeURIComponent(BACKEND_URL)]) {
+    try {
+      const r = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded',
+                   'Referer': 'https://130point.com/sales/' },
+        body: body.toString(),
+      });
+      if (r.status === 429) throw new Error('rate_limited');
+      if (!r.ok) continue;
+      const html = await r.text();
+      if (html.includes('data-price')) return html;
+    } catch(e) {
+      if (e.message === 'rate_limited') throw e;
+      // CORS error → try proxy
+    }
+  }
+  throw new Error('Could not reach 130point. Try again in a moment.');
+}
+
+// ── Parse HTML response ───────────────────────────────────────────────────────
+function parseItems(html) {
+  const items = [];
+  const rowRe = /<tr[^>]+data-price="([\d.]+)"[^>]+data-currency="([^"]+)"[^>]*>([\s\S]*?)<\/tr>/g;
+  let m;
+  while ((m = rowRe.exec(html)) !== null) {
+    const price = parseFloat(m[1]);
+    const currency = m[2];
+    const cell = m[3];
+    if (currency !== 'USD') continue;
+
+    const titleM = cell.match(/id=['"]titleText['"][^>]*>[\s\S]*?<a href=['"]([^'"]+)['"][^>]*>([^<]+)<\/a>/);
+    if (!titleM) continue;
+
+    const url   = titleM[1];
+    const title = titleM[2].trim();
+
+    let ship = 0;
+    const shipM = cell.match(/Shipping Price:<\/b>\s*\$([\d,.]+)/);
+    if (shipM) ship = parseFloat(shipM[1].replace(/,/g,''));
+
+    items.push({ title, price: Math.round((price + ship) * 100) / 100,
+                 url, grade: extractGrade(title) });
+  }
+  return items;
+}
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+function extractGrade(title) {
+  const u = title.toUpperCase();
+  for (const g of GRADE_KEYWORDS) if (u.includes(g)) return g;
+  for (const c of GRADE_COMPANIES) if (u.includes(c)) return c;
+  return 'Unknown';
+}
+
+function titleTokens(title) {
+  return new Set(
+    title.toLowerCase().match(/\b[a-z0-9/]+\b/g)?.filter(w => !STOP_WORDS.has(w) && w.length > 1) || []
+  );
+}
+
+function jaccard(a, b) {
+  if (!a.size || !b.size) return 0;
+  const inter = [...a].filter(x => b.has(x)).length;
+  const union  = new Set([...a, ...b]).size;
+  return inter / union;
+}
+
+function ebaySearchUrl(title, grade) {
+  const clean = title.replace(/\b(PSA|BGS|CGC|SGC)\b.*/i, '').trim();
+  const q = encodeURIComponent(`${clean} ${grade} pokemon`);
+  return `https://www.ebay.com/sch/i.html?_nkw=${q}&LH_BIN=1&LH_ItemCondition=3000&_sop=15`;
+}
+
+function median(arr) {
+  if (!arr.length) return 0;
+  const s = [...arr].sort((a,b)=>a-b);
+  const m = Math.floor(s.length/2);
+  return s.length%2 ? s[m] : (s[m-1]+s[m])/2;
+}
+
+// ── Render ───────────────────────────────────────────────────────────────────
+function renderResults(active, sold, threshold) {
+  // Build sold price map by grade
+  const soldByGrade = {};
+  for (const item of sold) {
+    (soldByGrade[item.grade] ||= []).push(item.price);
+  }
+
+  // Score active listings
+  const rows = active.map(item => {
+    const comp = soldByGrade[item.grade] || [];
+    if (comp.length) {
+      const med   = median(comp);
+      const ratio = item.price / med;
+      return { ...item, medSold: med, ratio, deal: ratio < threshold };
+    }
+    return { ...item, medSold: null, ratio: null, deal: false };
+  }).sort((a,b) => {
+    if (a.deal !== b.deal) return a.deal ? -1 : 1;
+    return (a.ratio ?? 999) - (b.ratio ?? 999);
+  });
+
+  // Stats
+  const deals = rows.filter(r => r.deal);
+  document.getElementById('stats-row').innerHTML = [
+    stat(active.length, 'Active listings'),
+    stat(sold.length,   'Sold comps'),
+    stat(deals.length,  `Deals < ${Math.round(threshold*100)}% market`, true),
+  ].join('');
+
+  // Grade medians
+  document.getElementById('comps-grid').innerHTML = Object.entries(soldByGrade)
+    .sort(([a],[b]) => a.localeCompare(b))
+    .map(([g, prices]) =>
+      `<div class="comp-badge">
+        <span class="grade-label">${g}</span>
+        <span class="grade-price">$${median(prices).toFixed(2)}</span>
+        <span class="grade-n">n=${prices.length}</span>
+      </div>`
+    ).join('');
+
+  // Table rows
+  const tbody = document.getElementById('results-body');
+  if (!rows.length) {
+    tbody.innerHTML = `<tr><td colspan="6"><div class="empty"><div class="icon">🔍</div><p>No results found. Try a different search.</p></div></td></tr>`;
+  } else {
+    tbody.innerHTML = rows.slice(0,50).map(r => {
+      const ratioStr = r.ratio ? `${Math.round(r.ratio*100)}%` : 'N/A';
+      const ratioClass = !r.ratio ? 'vs-na' : r.ratio < threshold ? 'vs-good' : r.ratio < 1 ? 'vs-good' : r.ratio > 1.2 ? 'vs-high' : 'vs-ok';
+      const liveUrl = ebaySearchUrl(r.title, r.grade);
+      return `<tr>
+        <td><span class="grade-tag">${r.grade}</span></td>
+        <td class="right"><strong>$${r.price.toFixed(2)}</strong></td>
+        <td class="right">${r.medSold ? '$'+r.medSold.toFixed(2) : '<span class="vs-na">N/A</span>'}</td>
+        <td class="right"><span class="${ratioClass}">${ratioStr}</span></td>
+        <td class="center">${r.deal ? '<span class="deal-badge">DEAL</span>' : ''}</td>
+        <td class="title-cell">
+          <span class="title-text">${escHtml(r.title.slice(0,70))}</span>
+          <a class="ebay-link" href="${liveUrl}" target="_blank" rel="noopener">🔗 Search live listings →</a>
+        </td>
+      </tr>`;
+    }).join('');
+  }
+
+  hide('loader');
+  show('results');
+}
+
+function stat(val, lbl, highlight=false) {
+  return `<div class="stat-chip${highlight?' highlight':''}">
+    <span class="val">${val}</span>
+    <span class="lbl">${lbl}</span>
+  </div>`;
+}
+
+function escHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// ── Search mode ──────────────────────────────────────────────────────────────
+async function runSearch() {
+  const card  = document.getElementById('card-input').value.trim();
+  const grade = document.getElementById('grade-input').value.trim();
+  if (!card) { showError('Please enter a card name.'); return; }
+
+  const query = grade ? `${card} pokemon ${grade}` : `${card} pokemon graded`;
+
+  document.getElementById('search-btn').disabled = true;
+  setLoading('Fetching sold comps...');
+
+  try {
+    const soldHtml   = await fetch130(query, true);
+    setText('loader-text', 'Fetching active listings...');
+    await delay(1200);
+    const activeHtml = await fetch130(query, false);
+
+    const sold   = parseItems(soldHtml);
+    const active = parseItems(activeHtml);
+
+    if (!sold.length && !active.length) {
+      showError('No results found. Try a different card name or grade.');
+      return;
+    }
+
+    renderResults(active, sold, DEAL_THRESHOLD);
+  } catch(e) {
+    if (e.message === 'rate_limited') {
+      showError('⚠️ Rate limited by 130point.com. Please wait a few minutes and try again.');
+    } else {
+      showError(`Error: ${e.message}`);
+    }
+  } finally {
+    document.getElementById('search-btn').disabled = false;
+  }
+}
+
+// ── Scan mode ────────────────────────────────────────────────────────────────
+const SCAN_QUERIES = [
+  'pokemon PSA 10 holo rare',
+  'pokemon PSA 9 holo rare',
+  'pokemon BGS 9.5',
+  'pokemon CGC 10',
+  'pokemon PSA 10 vintage base',
+  'pokemon PSA 9 vintage base',
+];
+
+async function runScan() {
+  const gradeFilter = document.getElementById('scan-grade').value;
+  const threshold   = parseFloat(document.getElementById('scan-threshold').value);
+  const queries = gradeFilter
+    ? [`pokemon ${gradeFilter} holo`, `pokemon ${gradeFilter} rare`, `pokemon ${gradeFilter} vintage`]
+    : SCAN_QUERIES;
+
+  document.getElementById('scan-btn').disabled = true;
+  setLoading('Starting broad scan...');
+
+  const allActive = [], allSold = [];
+  const seenActive = new Set(), seenSold = new Set();
+
+  try {
+    for (let i = 0; i < queries.length; i++) {
+      const q = queries[i];
+      setText('loader-text', `Scanning (${i+1}/${queries.length}): ${q}`);
+
+      const [activeHtml, soldHtml] = await Promise.allSettled([
+        fetch130(q, false).catch(() => ''),
+        delay(1500).then(() => fetch130(q, true).catch(() => '')),
+      ]).then(r => [r[0].value||'', r[1].value||'']);
+
+      for (const item of parseItems(activeHtml)) {
+        if (!seenActive.has(item.url)) { seenActive.add(item.url); allActive.push(item); }
+      }
+      for (const item of parseItems(soldHtml)) {
+        if (!seenSold.has(item.url)) { seenSold.add(item.url); allSold.push(item); }
+      }
+
+      if (i < queries.length - 1) await delay(3500);
+    }
+
+    // Match active to sold using Jaccard similarity
+    const soldWithTokens = allSold.map(item => ({ item, tokens: titleTokens(item.title) }));
+    const THRESHOLD_SIM = 0.35;
+    const MIN_COMPS = 2;
+
+    const matchedActive = allActive.map(item => {
+      const toks = titleTokens(item.title);
+      const comps = soldWithTokens
+        .filter(s => s.item.grade === item.grade && jaccard(toks, s.tokens) >= THRESHOLD_SIM)
+        .map(s => s.item.price);
+      if (comps.length < MIN_COMPS) return null;
+      const med   = median(comps);
+      const ratio = item.price / med;
+      return { ...item, medSold: med, ratio, deal: ratio < threshold, _comps: comps.length };
+    }).filter(Boolean);
+
+    renderResults(matchedActive, allSold, threshold);
+  } catch(e) {
+    if (e.message === 'rate_limited') {
+      showError('⚠️ Rate limited by 130point.com. Please wait ~1 hour before scanning again.');
+    } else {
+      showError(`Scan error: ${e.message}`);
+    }
+  } finally {
+    document.getElementById('scan-btn').disabled = false;
+  }
+}
+
+// ── Utils ────────────────────────────────────────────────────────────────────
+const delay = ms => new Promise(r => setTimeout(r, ms));
+
+// Enter key on search input
+document.getElementById('card-input').addEventListener('keydown', e => {
+  if (e.key === 'Enter') runSearch();
+});
+</script>
+</body>
+</html>
